@@ -1,7 +1,8 @@
 const DEFAULT_PRICE_PER_MINUTE = 0.006;
 const CHARS_PER_TOKEN = 4;
 const CHUNK_DURATION_SEC = 10 * 60;
-const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
+const DEFAULT_MAX_UPLOAD_BYTES = MAX_FILE_SIZE_BYTES;
 
 let pricePerMinuteUsd = DEFAULT_PRICE_PER_MINUTE;
 let maxUploadBytes = DEFAULT_MAX_UPLOAD_BYTES;
@@ -80,8 +81,11 @@ function buildClientUsageEstimate(durationSeconds, fileSize) {
   const exceedsDuration = duration > CHUNK_DURATION_SEC;
   const needsSplit = exceedsUpload || exceedsWhisper || exceedsDuration;
   const chunkByDuration = duration > 0 ? Math.ceil(duration / CHUNK_DURATION_SEC) : 1;
+  const secondsPerChunk = typeof window.secondsForMaxBytes === 'function'
+    ? window.secondsForMaxBytes(maxUploadBytes, 16000)
+    : Math.max(30, Math.floor((maxUploadBytes * 0.85) / (16000 * 2)));
   const chunkByUpload = exceedsUpload && duration > 0
-    ? Math.ceil(duration / Math.max(30, secondsForMaxBytes(maxUploadBytes, 16000)))
+    ? Math.ceil(duration / secondsPerChunk)
     : 1;
   const chunkCount = needsSplit ? Math.max(chunkByDuration, chunkByUpload) : 1;
   const whisper = estimateWhisperCost(duration);

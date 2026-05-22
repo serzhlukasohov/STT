@@ -164,3 +164,8 @@ function buildMergedContent(fileName, textParts) {
     ''
   ].join('\n');
 }
+
+window.secondsForMaxBytes = secondsForMaxBytes;
+window.splitAudioIntoUploadChunks = splitAudioIntoUploadChunks;
+window.extractTranscriptionBody = extractTranscriptionBody;
+window.buildMergedContent = buildMergedContent;

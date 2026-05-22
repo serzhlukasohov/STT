@@ -376,8 +376,15 @@ async function transcribeInClientParts(file, apiKey) {
     progressPercent: 8
   });
 
-  const chunks = await splitAudioIntoUploadChunks(file, getMaxUploadBytes() * 0.9);
+  const splitFn = window.splitAudioIntoUploadChunks;
+  if (typeof splitFn !== 'function') {
+    throw new Error('Audio splitter failed to load. Please hard-refresh the page (Cmd+Shift+R).');
+  }
+
+  const chunks = await splitFn(file, getMaxUploadBytes() * 0.9);
   const textParts = [];
+  const extractFn = window.extractTranscriptionBody;
+  const mergeFn = window.buildMergedContent;
 
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
@@ -390,10 +397,10 @@ async function transcribeInClientParts(file, apiKey) {
     const formData = new FormData();
     formData.append('audio', chunk.blob, chunk.name);
     const data = await transcribeWithStream(formData, apiKey);
-    textParts.push(extractTranscriptionBody(data.content));
+    textParts.push(extractFn(data.content));
   }
 
-  const content = buildMergedContent(file.name, textParts);
+  const content = mergeFn(file.name, textParts);
   return {
     content,
     fileName: `${file.name.replace(/\.[^/.]+$/, '')}_transcription.txt`,
