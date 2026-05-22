@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Speech to Text</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="32" height="32" rx="8" fill="currentColor" opacity="0.12"/>
+          <path d="M10 14v4a6 6 0 0012 0v-4M16 22v2M13 24h6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+          <path d="M16 8v6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Speech to Text</h1>
+        <p class="subtitle">Transcribe voice messages and audio files with OpenAI Whisper</p>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="card card-api" id="api-section">
+        <div class="card-header">
+          <span class="step-badge">1</span>
+          <h2>OpenAI API Key</h2>
+        </div>
+        <p class="card-desc">Your key stays in the browser and is sent only to this local server for transcription.</p>
+        <div class="api-row">
+          <div class="input-wrap">
+            <input
+              type="password"
+              id="api-key"
+              placeholder="sk-..."
+              autocomplete="off"
+              spellcheck="false"
+            >
+            <button type="button" class="btn-icon" id="toggle-key" title="Show/hide key" aria-label="Show API key">
+              <svg class="icon-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          </div>
+          <button type="button" class="btn btn-primary" id="save-key">Save key</button>
+        </div>
+        <p class="hint" id="key-status">No API key saved yet</p>
+      </section>
+
+      <section class="card card-upload disabled" id="upload-section">
+        <div class="card-header">
+          <span class="step-badge">2</span>
+          <h2>Upload audio</h2>
+        </div>
+        <div
+          class="dropzone"
+          id="dropzone"
+          role="button"
+          tabindex="0"
+          aria-label="Drop audio file here or click to browse"
+        >
+          <input type="file" id="file-input" accept=".m4a,.ogg,.mp3,.wav,.mp4,.aac,.webm" hidden>
+          <div class="dropzone-icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48" fill="none">
+              <path d="M24 32V16M24 16l-6 6M24 16l6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M8 32v4a4 4 0 004 4h24a4 4 0 004-4v-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <p class="dropzone-title">Drag & drop your audio file</p>
+          <p class="dropzone-hint">or click to browse · m4a, ogg, mp3, wav, mp4, aac, webm</p>
+        </div>
+        <div class="file-preview hidden view-panel" id="file-preview">
+          <canvas id="waveform-canvas" class="waveform-canvas" aria-hidden="true"></canvas>
+          <div class="file-preview-row">
+            <div class="file-info">
+              <span class="file-icon" aria-hidden="true">♪</span>
+              <div>
+                <p class="file-name" id="file-name"></p>
+                <p class="file-size" id="file-size"></p>
+                <p class="file-estimate hidden" id="file-estimate"></p>
+              </div>
+            </div>
+            <button type="button" class="btn btn-ghost" id="clear-file">Change file</button>
+          </div>
+        </div>
+        <button type="button" class="btn btn-primary btn-full" id="transcribe-btn" disabled>
+          Transcribe
+        </button>
+      </section>
+
+      <section class="card card-progress hidden view-panel" id="progress-section">
+        <div class="progress-header">
+          <div class="viz-wrap" aria-hidden="true">
+            <canvas id="live-waveform" class="live-waveform"></canvas>
+          </div>
+          <div>
+            <p class="progress-title">Transcribing…</p>
+            <p class="progress-sub" id="progress-text">Preparing audio</p>
+          </div>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progress-fill">
+            <span class="progress-shimmer"></span>
+          </div>
+        </div>
+        <div class="usage-panel" id="usage-panel">
+          <div class="usage-row">
+            <span class="usage-label">Status</span>
+            <span class="usage-value" id="usage-status">—</span>
+          </div>
+          <div class="usage-row">
+            <span class="usage-label">Audio</span>
+            <span class="usage-value" id="usage-duration">—</span>
+          </div>
+          <div class="usage-row">
+            <span class="usage-label">Billable</span>
+            <span class="usage-value" id="usage-billable">—</span>
+          </div>
+          <div class="usage-row">
+            <span class="usage-label">Output tokens</span>
+            <span class="usage-value" id="usage-tokens">—</span>
+          </div>
+          <div class="usage-row highlight">
+            <span class="usage-label">Est. cost</span>
+            <span class="usage-value usage-cost" id="usage-cost">—</span>
+          </div>
+          <p class="usage-note">Whisper is billed per audio minute (~$0.006/min). Output tokens ≈ transcribed text length.</p>
+        </div>
+      </section>
+
+      <section class="card card-result hidden view-panel" id="result-section">
+        <div class="card-header">
+          <span class="step-badge success">✓</span>
+          <h2>Transcription ready</h2>
+        </div>
+        <pre class="result-preview" id="result-preview"></pre>
+        <div class="result-actions">
+          <button type="button" class="btn btn-primary" id="download-btn">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75" width="18" height="18">
+              <path d="M10 3v10M6 9l4 4 4-4M4 17h12" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Download .txt
+          </button>
+          <button type="button" class="btn btn-ghost" id="new-transcription">Transcribe another</button>
+        </div>
+      </section>
+
+      <section class="card card-error hidden view-panel" id="error-section">
+        <p class="error-title">Something went wrong</p>
+        <p class="error-message" id="error-message"></p>
+        <button type="button" class="btn btn-ghost" id="dismiss-error">Try again</button>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>Large files are split automatically. API key is stored in <code>localStorage</code> on this device.</p>
+    </footer>
+  </div>
+
+  <script src="/js/analytics-client.js"></script>
+  <script src="/js/usage-estimate.js"></script>
+  <script src="/js/animations.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
