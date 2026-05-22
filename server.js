@@ -150,7 +150,8 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
 
   try {
     const transcription = await transcribeLargeAudio(req.file.path, apiKey, {
-      onProgress: sendProgress
+      onProgress: sendProgress,
+      sourceFileName: originalName
     });
     const content = buildOutputContentFromUpload({
       fileName: originalName,

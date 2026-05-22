@@ -43,3 +43,21 @@ test('buildOutputContentFromUpload includes metadata and transcription', () => {
   assert.match(content, /Date from filename: 07-01-2025 16:39:35/);
   assert.match(content, /Transcription:\nHello world/);
 });
+
+test('resolveTranscriptionFileName preserves upload filename for temp files', () => {
+  const { resolveTranscriptionFileName } = require('./script');
+
+  assert.equal(
+    resolveTranscriptionFileName('/tmp/sp-to-txt-uploads/abc123', 'voice-message.wav'),
+    'voice-message.wav'
+  );
+});
+
+test('resolveTranscriptionFileName falls back to path basename for generated chunks', () => {
+  const { resolveTranscriptionFileName } = require('./script');
+
+  assert.equal(
+    resolveTranscriptionFileName('/tmp/sp-to-txt-uploads/chunk_001.m4a'),
+    'chunk_001.m4a'
+  );
+});

@@ -10,19 +10,15 @@ const {
   CHUNK_DURATION,
   OUTPUT_DIR_NAME
 } = require('./script-constants');
-const { mergeTranscriptionParts } = require('./lib/transcription-merge');
 const {
   shouldSplitAudio,
   splitAudioIntoChunks,
   cleanupChunks
 } = require('./lib/split-audio');
+const { transcribeParts } = require('./lib/transcription-runner');
 
 const DEFAULT_API_KEY = process.env.OPENAI_API_KEY;
-const {
-  estimateTokensFromText,
-  estimateWhisperCost,
-  buildUsageEstimate
-} = require('./whisper-cost');
+const { buildUsageEstimate } = require('./whisper-cost');
 
 function getAudioDuration(filePath) {
   return new Promise((resolve, reject) => {
@@ -36,13 +32,22 @@ function getAudioDuration(filePath) {
   });
 }
 
-async function transcribeAudio(filePath, apiKey = DEFAULT_API_KEY) {
+function resolveTranscriptionFileName(filePath, sourceFileName = null) {
+  if (sourceFileName && path.extname(sourceFileName)) {
+    return path.basename(sourceFileName);
+  }
+
+  return path.basename(filePath);
+}
+
+async function transcribeAudio(filePath, apiKey = DEFAULT_API_KEY, options = {}) {
   if (!apiKey) {
     throw new Error('OpenAI API key is required');
   }
 
+  const filename = resolveTranscriptionFileName(filePath, options.filename);
   const formData = new FormData();
-  formData.append('file', fs.createReadStream(filePath));
+  formData.append('file', fs.createReadStream(filePath), { filename });
   formData.append('model', 'whisper-1');
 
   try {
@@ -102,7 +107,9 @@ function buildOutputPath(filePath, outputDirectory) {
 }
 
 async function transcribeLargeAudio(filePath, apiKey = DEFAULT_API_KEY, options = {}) {
-  const { onProgress } = options;
+  const { onProgress, sourceFileName } = options;
+  let chunks = [];
+  let chunkDir = null;
 
   try {
     console.log(`Starting transcription of: ${filePath}`);
@@ -123,97 +130,37 @@ async function transcribeLargeAudio(filePath, apiKey = DEFAULT_API_KEY, options 
       willSplit
     });
 
-    const { chunks, chunkDir } = await splitAudioIntoChunks(filePath, {
+    const splitResult = await splitAudioIntoChunks(filePath, {
       duration,
       fileSize,
       onProgress
     });
+    chunks = splitResult.chunks;
+    chunkDir = splitResult.chunkDir;
 
     console.log(`Transcribing ${chunks.length} part(s)...`);
-    const transcriptions = [];
-    let cumulativeOutputTokens = 0;
-    let processedSeconds = 0;
-
-    for (let i = 0; i < chunks.length; i++) {
-      const chunkSeconds = duration / chunks.length;
-      const chunkStartMin = (i * duration) / chunks.length / 60;
-      const chunkEndMin = ((i + 1) * duration) / chunks.length / 60;
-
-      onProgress?.({
-        type: 'chunk_start',
-        chunk: i + 1,
-        totalChunks: chunks.length,
-        message: `Transcribing part ${i + 1} of ${chunks.length}…`,
-        processedSeconds,
-        totalSeconds: duration,
-        progressPercent: duration > 0 ? Math.round((processedSeconds / duration) * 100) : 0
-      });
-
-      console.log(`Transcribing part ${i + 1}/${chunks.length}...`);
-      try {
-        const chunkResult = await transcribeAudio(chunks[i], apiKey);
-        const chunkTokens = estimateTokensFromText(chunkResult);
-        cumulativeOutputTokens += chunkTokens;
-        processedSeconds += chunkSeconds;
-
-        const cost = estimateWhisperCost(processedSeconds);
-
-        onProgress?.({
-          type: 'chunk_done',
-          chunk: i + 1,
-          totalChunks: chunks.length,
-          chunkOutputTokens: chunkTokens,
-          cumulativeOutputTokens,
-          processedSeconds,
-          totalSeconds: duration,
-          billableMinutes: cost.billableMinutes,
-          estimatedCostUsd: cost.costUsd,
-          progressPercent: duration > 0 ? Math.round((processedSeconds / duration) * 100) : 100
-        });
-
-        transcriptions.push({
-          text: chunkResult,
-          timestamp: `[${chunkStartMin.toFixed(1)}min - ${chunkEndMin.toFixed(1)}min]`
-        });
-        console.log(`Part ${i + 1} completed`);
-      } catch (error) {
-        console.error(`Error transcribing part ${i + 1}:`, error.message);
-        processedSeconds += chunkSeconds;
-
-        onProgress?.({
-          type: 'chunk_error',
-          chunk: i + 1,
-          totalChunks: chunks.length,
-          message: error.message
-        });
-
-        transcriptions.push({
-          text: '[ERROR: Failed to transcribe this part]',
-          timestamp: `[${chunkStartMin.toFixed(1)}min - ${chunkEndMin.toFixed(1)}min]`
-        });
+    const result = await transcribeParts({
+      chunks,
+      durationSeconds: duration,
+      onProgress,
+      includeChunkMarkers: process.env.INCLUDE_CHUNK_MARKERS === '1',
+      transcribePart: async (chunkPath, index) => {
+        console.log(`Transcribing part ${index + 1}/${chunks.length}...`);
+        const filename = chunkPath === filePath
+          ? resolveTranscriptionFileName(filePath, sourceFileName)
+          : resolveTranscriptionFileName(chunkPath);
+        const text = await transcribeAudio(chunkPath, apiKey, { filename });
+        console.log(`Part ${index + 1} completed`);
+        return text;
       }
-    }
-
-    const fullTranscription = mergeTranscriptionParts(transcriptions, {
-      includeChunkMarkers: process.env.INCLUDE_CHUNK_MARKERS === '1'
     });
 
-    cleanupChunks(chunks, filePath, chunkDir);
-
-    const finalCost = estimateWhisperCost(duration);
-    onProgress?.({
-      type: 'complete',
-      cumulativeOutputTokens,
-      billableMinutes: finalCost.billableMinutes,
-      estimatedCostUsd: finalCost.costUsd,
-      progressPercent: 100,
-      partsMerged: chunks.length
-    });
-
-    return fullTranscription;
+    return result.text;
   } catch (error) {
     console.error('Error in transcribeLargeAudio:', error);
     throw error;
+  } finally {
+    cleanupChunks(chunks, filePath, chunkDir);
   }
 }
 
@@ -300,6 +247,7 @@ module.exports = {
   buildOutputPath,
   buildOutputContentFromUpload,
   buildDownloadFileName,
+  resolveTranscriptionFileName,
   getAudioDuration,
   shouldSplitAudio,
   transcribeLargeAudio
