@@ -1,9 +1,32 @@
 const DEFAULT_PRICE_PER_MINUTE = 0.006;
 const CHARS_PER_TOKEN = 4;
 const CHUNK_DURATION_SEC = 10 * 60;
-const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
+const DEFAULT_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 let pricePerMinuteUsd = DEFAULT_PRICE_PER_MINUTE;
+let maxUploadBytes = DEFAULT_MAX_UPLOAD_BYTES;
+let hostConfig = null;
+
+async function loadHostConfig() {
+  try {
+    const response = await fetch('/api/config');
+    if (response.ok) {
+      hostConfig = await response.json();
+      maxUploadBytes = (hostConfig.maxUploadMb || 25) * 1024 * 1024;
+    }
+  } catch {
+    maxUploadBytes = DEFAULT_MAX_UPLOAD_BYTES;
+  }
+  return hostConfig;
+}
+
+function getMaxUploadBytes() {
+  return maxUploadBytes;
+}
+
+function getHostConfig() {
+  return hostConfig;
+}
 
 async function loadWhisperPricing() {
   try {
@@ -91,3 +114,4 @@ function getAudioDurationFromFile(file) {
 }
 
 loadWhisperPricing();
+loadHostConfig();

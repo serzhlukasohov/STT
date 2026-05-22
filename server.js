@@ -1,6 +1,5 @@
 const express = require('express');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const multer = require('multer');
 const {
@@ -11,13 +10,24 @@ const {
 } = require('./script');
 const { trackEvent, getSummary, isValidSecret } = require('./analytics');
 const { WHISPER_USD_PER_MINUTE } = require('./whisper-cost');
+const {
+  IS_VERCEL,
+  getMaxUploadBytes,
+  getUploadDir
+} = require('./lib/runtime');
 
 const PORT = process.env.PORT || 3847;
 const ANALYTICS_SECRET = process.env.ANALYTICS_SECRET || '';
-const MAX_UPLOAD_SIZE = 500 * 1024 * 1024;
+const MAX_UPLOAD_SIZE = getMaxUploadBytes();
+const MAX_UPLOAD_MB = Math.round(MAX_UPLOAD_SIZE / (1024 * 1024));
+
+const uploadDir = getUploadDir();
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
 
 const upload = multer({
-  dest: path.join(os.tmpdir(), 'sp-to-txt-uploads'),
+  dest: uploadDir,
   limits: { fileSize: MAX_UPLOAD_SIZE },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
@@ -55,6 +65,18 @@ function getVisitorId(req) {
 }
 
 const ALLOWED_EVENTS = new Set(['visit', 'download']);
+
+app.get('/api/config', (_req, res) => {
+  res.json({
+    isVercel: IS_VERCEL,
+    maxUploadMb: MAX_UPLOAD_MB,
+    maxWhisperChunkMb: 25,
+    analyticsEphemeral: IS_VERCEL,
+    note: IS_VERCEL
+      ? 'On Vercel, use files under the upload limit. Long jobs need a Pro plan with extended function duration.'
+      : null
+  });
+});
 
 app.post('/api/analytics/track', (req, res) => {
   const event = req.body?.event;
@@ -153,12 +175,15 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
   } catch (error) {
     trackEvent('transcribe_fail', visitorId);
     const message = error.response?.data?.error?.message || error.message || 'Transcription failed';
+    const hint = IS_VERCEL && /timeout|TIMEOUT|504|502/i.test(message)
+      ? ' Try a shorter file or upgrade Vercel plan for longer function duration.'
+      : '';
 
     if (useStream) {
-      writeSse(res, 'error', { error: message });
+      writeSse(res, 'error', { error: message + hint });
       res.end();
     } else {
-      res.status(500).json({ error: message });
+      res.status(500).json({ error: message + hint });
     }
   } finally {
     removeFile(req.file.path);
@@ -168,7 +193,7 @@ app.post('/api/transcribe', upload.single('audio'), async (req, res) => {
 app.use((error, _req, res, _next) => {
   if (error instanceof multer.MulterError) {
     const message = error.code === 'LIMIT_FILE_SIZE'
-      ? 'File is too large (max 500 MB)'
+      ? `File is too large (max ${MAX_UPLOAD_MB} MB on this host)`
       : error.message;
     return res.status(400).json({ error: message });
   }
@@ -180,11 +205,15 @@ app.use((error, _req, res, _next) => {
   res.status(500).json({ error: 'Unexpected server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Speech-to-text UI: http://localhost:${PORT}`);
-  if (ANALYTICS_SECRET) {
-    console.log(`Analytics dashboard: http://localhost:${PORT}/stats.html`);
-  } else {
-    console.log('Analytics: tracking enabled. Set ANALYTICS_SECRET to open /stats.html');
-  }
-});
+module.exports = app;
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Speech-to-text UI: http://localhost:${PORT}`);
+    if (ANALYTICS_SECRET) {
+      console.log(`Analytics dashboard: http://localhost:${PORT}/stats.html`);
+    } else {
+      console.log('Analytics: tracking enabled. Set ANALYTICS_SECRET to open /stats.html');
+    }
+  });
+}

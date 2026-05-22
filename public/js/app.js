@@ -354,6 +354,20 @@ async function transcribeWithStream(formData, apiKey) {
   return resultPayload;
 }
 
+async function validateFileSize(file) {
+  const limit = getMaxUploadBytes();
+  if (file.size > limit) {
+    const limitMb = (limit / (1024 * 1024)).toFixed(1);
+    const config = getHostConfig();
+    const vercelHint = config?.isVercel
+      ? ' On Vercel Hobby the limit is ~4 MB; set MAX_UPLOAD_MB on Pro.'
+      : '';
+    showError(`File is too large (max ${limitMb} MB on this server).${vercelHint}`);
+    return false;
+  }
+  return true;
+}
+
 async function setSelectedFile(file) {
   selectedFile = file;
   fileDurationSeconds = null;
@@ -364,6 +378,11 @@ async function setSelectedFile(file) {
     transcribeBtn.disabled = true;
     hideFileEstimate();
     fileWaveform.clear();
+    return;
+  }
+
+  if (!validateFileSize(file)) {
+    fileInput.value = '';
     return;
   }
 
@@ -408,10 +427,10 @@ dropzone.addEventListener('keydown', (event) => {
   }
 });
 
-fileInput.addEventListener('change', () => {
+fileInput.addEventListener('change', async () => {
   const file = fileInput.files[0];
   if (file && isAudioFile(file)) {
-    setSelectedFile(file);
+    await setSelectedFile(file);
   } else if (file) {
     showError('Unsupported format. Use m4a, ogg, mp3, wav, mp4, aac, or webm.');
   }
@@ -437,14 +456,14 @@ clearFileBtn.addEventListener('click', () => {
   });
 });
 
-dropzone.addEventListener('drop', (event) => {
+dropzone.addEventListener('drop', async (event) => {
   const file = event.dataTransfer.files[0];
   if (!file) return;
   if (!isAudioFile(file)) {
     showError('Unsupported format. Use m4a, ogg, mp3, wav, mp4, aac, or webm.');
     return;
   }
-  setSelectedFile(file);
+  await setSelectedFile(file);
 });
 
 transcribeBtn.addEventListener('click', async () => {

@@ -1,9 +1,10 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { getAnalyticsDataFile } = require('./lib/runtime');
 
-const DATA_DIR = path.join(__dirname, 'data');
-const DATA_FILE = process.env.ANALYTICS_DATA_FILE || path.join(DATA_DIR, 'analytics.json');
+const DATA_FILE = getAnalyticsDataFile();
+const DATA_DIR = path.dirname(DATA_FILE);
 const MAX_STORED_VISITORS = 50_000;
 
 function emptyState() {
