@@ -26,6 +26,12 @@ test('buildUsageEstimate reports chunk count for large files', () => {
   });
   assert.equal(large.chunkCount, 3);
 
+  const long = buildUsageEstimate({
+    durationSeconds: 25 * 60,
+    fileSize: 1024
+  });
+  assert.equal(long.chunkCount, 3);
+
   const small = buildUsageEstimate({
     durationSeconds: 60,
     fileSize: 1024

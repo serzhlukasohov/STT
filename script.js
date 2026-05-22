@@ -4,15 +4,23 @@ const fs = require('fs');
 const FormData = require('form-data');
 const ffmpeg = require('fluent-ffmpeg');
 const path = require('path');
-const MAX_FILE_SIZE = 25 * 1024 * 1024;
-const CHUNK_DURATION = 10 * 60;
-const AUDIO_EXTENSIONS = new Set(['.m4a', '.ogg', '.mp3', '.wav', '.mp4', '.aac', '.webm']);
-const OUTPUT_DIR_NAME = 'transcriptions';
+const {
+  AUDIO_EXTENSIONS,
+  MAX_FILE_SIZE,
+  CHUNK_DURATION,
+  OUTPUT_DIR_NAME
+} = require('./script-constants');
+const { mergeTranscriptionParts } = require('./lib/transcription-merge');
+const {
+  shouldSplitAudio,
+  splitAudioIntoChunks,
+  cleanupChunks
+} = require('./lib/split-audio');
+
 const DEFAULT_API_KEY = process.env.OPENAI_API_KEY;
 const {
   estimateTokensFromText,
   estimateWhisperCost,
-  getChunkDurationSeconds,
   buildUsageEstimate
 } = require('./whisper-cost');
 
@@ -26,51 +34,6 @@ function getAudioDuration(filePath) {
       }
     });
   });
-}
-
-async function splitAudioIntoChunks(filePath, { duration, fileSize, onProgress } = {}) {
-  const resolvedDuration = duration ?? await getAudioDuration(filePath);
-  const resolvedSize = fileSize ?? fs.statSync(filePath).size;
-
-  console.log(`Audio duration: ${resolvedDuration.toFixed(2)} seconds`);
-  console.log(`File size: ${(resolvedSize / 1024 / 1024).toFixed(2)} MB`);
-
-  if (resolvedSize <= MAX_FILE_SIZE) {
-    console.log('File is small enough, no splitting needed');
-    return [filePath];
-  }
-
-  console.log('File is too large, splitting into chunks...');
-  const chunks = [];
-  const numChunks = Math.ceil(resolvedDuration / CHUNK_DURATION);
-
-  for (let i = 0; i < numChunks; i++) {
-    onProgress?.({
-      type: 'splitting',
-      chunk: i + 1,
-      totalChunks: numChunks,
-      message: `Splitting audio chunk ${i + 1} of ${numChunks}…`
-    });
-
-    const startTime = i * CHUNK_DURATION;
-    const chunkPath = filePath.replace(/\.[^/.]+$/, `_chunk_${i + 1}.m4a`);
-
-    await new Promise((resolve, reject) => {
-      ffmpeg(filePath)
-        .seekInput(startTime)
-        .duration(CHUNK_DURATION)
-        .output(chunkPath)
-        .on('end', () => {
-          console.log(`Created chunk ${i + 1}/${numChunks}: ${chunkPath}`);
-          chunks.push(chunkPath);
-          resolve();
-        })
-        .on('error', reject)
-        .run();
-    });
-  }
-
-  return chunks;
 }
 
 async function transcribeAudio(filePath, apiKey = DEFAULT_API_KEY) {
@@ -138,15 +101,6 @@ function buildOutputPath(filePath, outputDirectory) {
   return path.join(outputDirectory, `${parsed.name}_transcription.txt`);
 }
 
-function cleanupChunks(chunks, originalFilePath) {
-  chunks.forEach((chunkPath) => {
-    if (chunkPath !== originalFilePath && fs.existsSync(chunkPath)) {
-      fs.unlinkSync(chunkPath);
-      console.log(`Deleted: ${chunkPath}`);
-    }
-  });
-}
-
 async function transcribeLargeAudio(filePath, apiKey = DEFAULT_API_KEY, options = {}) {
   const { onProgress } = options;
 
@@ -156,36 +110,46 @@ async function transcribeLargeAudio(filePath, apiKey = DEFAULT_API_KEY, options 
     onProgress?.({ type: 'status', message: 'Analyzing audio duration…' });
     const duration = await getAudioDuration(filePath);
     const fileSize = fs.statSync(filePath).size;
-    const usageEstimate = buildUsageEstimate({ durationSeconds: duration, fileSize });
+    const willSplit = shouldSplitAudio(fileSize, duration);
+    const usageEstimate = buildUsageEstimate({
+      durationSeconds: duration,
+      fileSize,
+      forceSplit: willSplit
+    });
 
     onProgress?.({
       type: 'usage_estimate',
-      ...usageEstimate
+      ...usageEstimate,
+      willSplit
     });
 
-    const chunks = await splitAudioIntoChunks(filePath, { duration, fileSize, onProgress });
+    const { chunks, chunkDir } = await splitAudioIntoChunks(filePath, {
+      duration,
+      fileSize,
+      onProgress
+    });
 
-    console.log(`Transcribing ${chunks.length} chunks...`);
+    console.log(`Transcribing ${chunks.length} part(s)...`);
     const transcriptions = [];
     let cumulativeOutputTokens = 0;
     let processedSeconds = 0;
 
     for (let i = 0; i < chunks.length; i++) {
-      const chunkSeconds = getChunkDurationSeconds(i, duration, CHUNK_DURATION);
-      const chunkStartMin = (i * CHUNK_DURATION) / 60;
-      const chunkEndMin = Math.min((i + 1) * CHUNK_DURATION, duration) / 60;
+      const chunkSeconds = duration / chunks.length;
+      const chunkStartMin = (i * duration) / chunks.length / 60;
+      const chunkEndMin = ((i + 1) * duration) / chunks.length / 60;
 
       onProgress?.({
         type: 'chunk_start',
         chunk: i + 1,
         totalChunks: chunks.length,
-        message: `Transcribing chunk ${i + 1} of ${chunks.length}…`,
+        message: `Transcribing part ${i + 1} of ${chunks.length}…`,
         processedSeconds,
         totalSeconds: duration,
         progressPercent: duration > 0 ? Math.round((processedSeconds / duration) * 100) : 0
       });
 
-      console.log(`Transcribing chunk ${i + 1}/${chunks.length}...`);
+      console.log(`Transcribing part ${i + 1}/${chunks.length}...`);
       try {
         const chunkResult = await transcribeAudio(chunks[i], apiKey);
         const chunkTokens = estimateTokensFromText(chunkResult);
@@ -208,13 +172,12 @@ async function transcribeLargeAudio(filePath, apiKey = DEFAULT_API_KEY, options 
         });
 
         transcriptions.push({
-          chunk: i + 1,
           text: chunkResult,
           timestamp: `[${chunkStartMin.toFixed(1)}min - ${chunkEndMin.toFixed(1)}min]`
         });
-        console.log(`Chunk ${i + 1} completed`);
+        console.log(`Part ${i + 1} completed`);
       } catch (error) {
-        console.error(`Error transcribing chunk ${i + 1}:`, error.message);
+        console.error(`Error transcribing part ${i + 1}:`, error.message);
         processedSeconds += chunkSeconds;
 
         onProgress?.({
@@ -225,18 +188,17 @@ async function transcribeLargeAudio(filePath, apiKey = DEFAULT_API_KEY, options 
         });
 
         transcriptions.push({
-          chunk: i + 1,
-          text: '[ERROR: Failed to transcribe this chunk]',
+          text: '[ERROR: Failed to transcribe this part]',
           timestamp: `[${chunkStartMin.toFixed(1)}min - ${chunkEndMin.toFixed(1)}min]`
         });
       }
     }
 
-    const fullTranscription = transcriptions
-      .map((t) => `${t.timestamp}\n${t.text}`)
-      .join('\n\n---\n\n');
+    const fullTranscription = mergeTranscriptionParts(transcriptions, {
+      includeChunkMarkers: process.env.INCLUDE_CHUNK_MARKERS === '1'
+    });
 
-    cleanupChunks(chunks, filePath);
+    cleanupChunks(chunks, filePath, chunkDir);
 
     const finalCost = estimateWhisperCost(duration);
     onProgress?.({
@@ -244,7 +206,8 @@ async function transcribeLargeAudio(filePath, apiKey = DEFAULT_API_KEY, options 
       cumulativeOutputTokens,
       billableMinutes: finalCost.billableMinutes,
       estimatedCostUsd: finalCost.costUsd,
-      progressPercent: 100
+      progressPercent: 100,
+      partsMerged: chunks.length
     });
 
     return fullTranscription;
@@ -338,5 +301,6 @@ module.exports = {
   buildOutputContentFromUpload,
   buildDownloadFileName,
   getAudioDuration,
+  shouldSplitAudio,
   transcribeLargeAudio
 };

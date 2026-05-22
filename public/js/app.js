@@ -164,9 +164,10 @@ function formatTokenCount(value) {
 }
 
 function showFileEstimate(estimate) {
-  const chunksLabel = estimate.chunkCount > 1 ? ` · ${estimate.chunkCount} chunks` : '';
+  const chunksLabel = estimate.chunkCount > 1 ? ` · ${estimate.chunkCount} parts` : '';
+  const splitLabel = estimate.clientSideSplit ? ' · split before upload' : estimate.willSplit ? ' · split on server' : '';
   fileEstimateEl.textContent =
-    `~${estimate.durationFormatted} · ${estimate.billableMinutes} min billable · est. ${formatUsd(estimate.estimatedCostUsd)}${chunksLabel}`;
+    `~${estimate.durationFormatted} · ${estimate.billableMinutes} min billable · est. ${formatUsd(estimate.estimatedCostUsd)}${chunksLabel}${splitLabel}`;
   fileEstimateEl.classList.remove('hidden');
   fileEstimateEl.classList.add('estimate-pop');
 }
@@ -354,18 +355,60 @@ async function transcribeWithStream(formData, apiKey) {
   return resultPayload;
 }
 
-async function validateFileSize(file) {
-  const limit = getMaxUploadBytes();
-  if (file.size > limit) {
-    const limitMb = (limit / (1024 * 1024)).toFixed(1);
-    const config = getHostConfig();
-    const vercelHint = config?.isVercel
-      ? ' On Vercel Hobby the limit is ~4 MB; set MAX_UPLOAD_MB on Pro.'
-      : '';
-    showError(`File is too large (max ${limitMb} MB on this server).${vercelHint}`);
+const BROWSER_PROCESSING_LIMIT = 250 * 1024 * 1024;
+
+function needsClientSideSplit(file) {
+  return file.size > getMaxUploadBytes();
+}
+
+function validateFileSize(file) {
+  if (file.size > BROWSER_PROCESSING_LIMIT) {
+    showError(`File is too large to process in the browser (max ${BROWSER_PROCESSING_LIMIT / (1024 * 1024)} MB).`);
     return false;
   }
   return true;
+}
+
+async function transcribeInClientParts(file, apiKey) {
+  updateUsagePanel({
+    status: 'Splitting in browser…',
+    progressText: 'Preparing audio parts for upload…',
+    progressPercent: 8
+  });
+
+  const chunks = await splitAudioIntoUploadChunks(file, getMaxUploadBytes() * 0.9);
+  const textParts = [];
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    updateUsagePanel({
+      status: `Part ${chunk.index} of ${chunk.total}`,
+      progressText: `Uploading and transcribing part ${chunk.index}…`,
+      progressPercent: 10 + Math.round((i / chunks.length) * 85)
+    });
+
+    const formData = new FormData();
+    formData.append('audio', chunk.blob, chunk.name);
+    const data = await transcribeWithStream(formData, apiKey);
+    textParts.push(extractTranscriptionBody(data.content));
+  }
+
+  const content = buildMergedContent(file.name, textParts);
+  return {
+    content,
+    fileName: `${file.name.replace(/\.[^/.]+$/, '')}_transcription.txt`,
+    preview: content.slice(0, 2000)
+  };
+}
+
+async function transcribeSelectedFile(apiKey) {
+  if (needsClientSideSplit(selectedFile)) {
+    return transcribeInClientParts(selectedFile, apiKey);
+  }
+
+  const formData = new FormData();
+  formData.append('audio', selectedFile);
+  return transcribeWithStream(formData, apiKey);
 }
 
 async function setSelectedFile(file) {
@@ -484,17 +527,17 @@ transcribeBtn.addEventListener('click', async () => {
   });
   uploadSection.classList.add('disabled');
 
+  const willSplitClient = needsClientSideSplit(selectedFile);
   updateUsagePanel({
-    status: 'Uploading…',
-    progressText: 'Uploading audio to server…',
+    status: willSplitClient ? 'Preparing parts…' : 'Uploading…',
+    progressText: willSplitClient
+      ? 'Large file will be split, then each part transcribed and merged'
+      : 'Uploading audio to server…',
     progressPercent: 2
   });
 
-  const formData = new FormData();
-  formData.append('audio', selectedFile);
-
   try {
-    const data = await transcribeWithStream(formData, apiKey);
+    const data = await transcribeSelectedFile(apiKey);
 
     resultContent = data.content;
     resultFileName = data.fileName;

@@ -75,14 +75,23 @@ function formatUsd(amount) {
 
 function buildClientUsageEstimate(durationSeconds, fileSize) {
   const duration = Math.max(0, Number(durationSeconds) || 0);
-  const needsSplit = (fileSize || 0) > MAX_FILE_SIZE_BYTES && duration > 0;
-  const chunkCount = needsSplit ? Math.ceil(duration / CHUNK_DURATION_SEC) : 1;
+  const exceedsUpload = (fileSize || 0) > maxUploadBytes;
+  const exceedsWhisper = (fileSize || 0) > MAX_FILE_SIZE_BYTES;
+  const exceedsDuration = duration > CHUNK_DURATION_SEC;
+  const needsSplit = exceedsUpload || exceedsWhisper || exceedsDuration;
+  const chunkByDuration = duration > 0 ? Math.ceil(duration / CHUNK_DURATION_SEC) : 1;
+  const chunkByUpload = exceedsUpload && duration > 0
+    ? Math.ceil(duration / Math.max(30, secondsForMaxBytes(maxUploadBytes, 16000)))
+    : 1;
+  const chunkCount = needsSplit ? Math.max(chunkByDuration, chunkByUpload) : 1;
   const whisper = estimateWhisperCost(duration);
 
   return {
     durationSeconds: duration,
     durationFormatted: formatDuration(duration),
     chunkCount,
+    willSplit: needsSplit,
+    clientSideSplit: exceedsUpload,
     billableMinutes: whisper.billableMinutes,
     estimatedCostUsd: whisper.costUsd,
     estimatedOutputTokens: 0

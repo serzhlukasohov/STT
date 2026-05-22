@@ -27,10 +27,20 @@ function getChunkDurationSeconds(chunkIndex, totalDurationSeconds, chunkDuration
   return Math.min(chunkDurationSeconds, remaining);
 }
 
-function buildUsageEstimate({ durationSeconds, fileSize, chunkDurationSeconds = 10 * 60, maxFileSize = 25 * 1024 * 1024 }) {
+function buildUsageEstimate({
+  durationSeconds,
+  fileSize,
+  chunkDurationSeconds = 10 * 60,
+  maxFileSize = 25 * 1024 * 1024,
+  forceSplit = null
+}) {
   const duration = Math.max(0, Number(durationSeconds) || 0);
-  const needsSplit = (fileSize || 0) > maxFileSize && duration > 0;
-  const chunkCount = needsSplit ? Math.ceil(duration / chunkDurationSeconds) : 1;
+  const needsSplit = forceSplit ?? (
+    (fileSize || 0) > maxFileSize || duration > chunkDurationSeconds
+  );
+  const chunkCount = needsSplit && duration > 0
+    ? Math.ceil(duration / chunkDurationSeconds)
+    : 1;
   const whisper = estimateWhisperCost(duration);
 
   return {
