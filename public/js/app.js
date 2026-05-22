@@ -23,6 +23,8 @@ const usageDuration = $('usage-duration');
 const usageBillable = $('usage-billable');
 const usageTokens = $('usage-tokens');
 const usageCost = $('usage-cost');
+const activityLog = $('activity-log');
+const progressTitle = document.querySelector('.progress-title');
 const resultSection = $('result-section');
 const resultPreview = $('result-preview');
 const downloadBtn = $('download-btn');
@@ -41,6 +43,8 @@ let resultFileName = 'transcription.txt';
 let lastCostUsd = 0;
 let lastTokenCount = 0;
 let lastBillableMinutes = 0;
+let activitySeq = 0;
+let activeActivityId = null;
 
 function formatFileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -93,8 +97,65 @@ function resetUsagePanel() {
   lastCostUsd = 0;
   lastTokenCount = 0;
   lastBillableMinutes = 0;
+  activitySeq = 0;
+  activeActivityId = null;
+  activityLog.innerHTML = '';
   progressFill.style.width = '0%';
   liveWaveform.setProgress(0);
+  if (progressTitle) {
+    progressTitle.textContent = 'Transcribing…';
+  }
+}
+
+function formatActivityTime(date = new Date()) {
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function pushActivity(message, { active = true } = {}) {
+  if (activeActivityId) {
+    const prev = activityLog.querySelector(`[data-id="${activeActivityId}"]`);
+    if (prev) {
+      prev.classList.remove('is-active');
+      prev.classList.add('is-done');
+    }
+  }
+
+  activitySeq += 1;
+  const id = activitySeq;
+  if (active) {
+    activeActivityId = id;
+  }
+
+  const item = document.createElement('li');
+  item.className = `activity-item${active ? ' is-active' : ' is-done'}`;
+  item.dataset.id = String(id);
+  item.innerHTML = `
+    <span class="activity-dot" aria-hidden="true"></span>
+    <span class="activity-time">${formatActivityTime()}</span>
+    <span class="activity-text"></span>
+  `;
+  item.querySelector('.activity-text').textContent = message;
+  activityLog.append(item);
+  activityLog.scrollTop = activityLog.scrollHeight;
+
+  return id;
+}
+
+function seedInitialEstimate(file) {
+  if (!fileDurationSeconds) {
+    return;
+  }
+
+  const estimate = buildClientUsageEstimate(fileDurationSeconds, file.size);
+  updateUsagePanel({
+    status: 'Starting…',
+    progressText: 'Initializing transcription…',
+    durationFormatted: estimate.durationFormatted,
+    billableMinutes: estimate.billableMinutes,
+    estimatedCostUsd: estimate.estimatedCostUsd,
+    estimatedOutputTokens: 0,
+    progressPercent: 1
+  });
 }
 
 function setProgressPercent(percent) {
@@ -102,44 +163,69 @@ function setProgressPercent(percent) {
   liveWaveform.setProgress(percent);
 }
 
-async function animateUsageValues(data) {
+function applyUsageValuesSync(data) {
+  const chunkNote = data.totalChunks > 1 && data.chunk
+    ? ` · part ${data.chunk}/${data.totalChunks}`
+    : '';
+
+  if (data.billableMinutes !== undefined) {
+    usageBillable.textContent = `${Number(data.billableMinutes).toFixed(2)} min${chunkNote}`;
+    usageBillable.dataset.value = String(data.billableMinutes);
+  }
+
+  if (data.cumulativeOutputTokens !== undefined) {
+    usageTokens.textContent = `~${formatTokenCount(data.cumulativeOutputTokens)}`;
+    usageTokens.dataset.value = String(data.cumulativeOutputTokens);
+  } else if (data.estimatedOutputTokens !== undefined) {
+    usageTokens.textContent = data.estimatedOutputTokens > 0
+      ? `~${formatTokenCount(data.estimatedOutputTokens)} (est.)`
+      : 'waiting…';
+  }
+
+  if (data.estimatedCostUsd !== undefined) {
+    usageCost.textContent = formatUsd(data.estimatedCostUsd);
+    usageCost.dataset.value = String(data.estimatedCostUsd);
+  }
+}
+
+function animateUsageValues(data) {
+  const chunkNote = data.totalChunks > 1 && data.chunk
+    ? ` · part ${data.chunk}/${data.totalChunks}`
+    : '';
+
   if (data.billableMinutes !== undefined && data.billableMinutes !== lastBillableMinutes) {
     lastBillableMinutes = data.billableMinutes;
-    const chunkNote = data.totalChunks > 1 && data.chunk
-      ? ` · chunk ${data.chunk}/${data.totalChunks}`
-      : '';
-    await animateNumber(usageBillable, data.billableMinutes, {
+    animateNumber(usageBillable, data.billableMinutes, {
       formatter: (value) => `${value.toFixed(2)} min${chunkNote}`
     });
   }
 
   if (data.cumulativeOutputTokens !== undefined && data.cumulativeOutputTokens !== lastTokenCount) {
     lastTokenCount = data.cumulativeOutputTokens;
-    await animateNumber(usageTokens, data.cumulativeOutputTokens, {
+    animateNumber(usageTokens, data.cumulativeOutputTokens, {
       formatter: (value) => `~${formatTokenCount(Math.round(value))}`
     });
-  } else if (data.estimatedOutputTokens !== undefined) {
-    usageTokens.textContent = data.estimatedOutputTokens > 0
-      ? `~${formatTokenCount(data.estimatedOutputTokens)} (est.)`
-      : '— (after transcription)';
   }
 
   if (data.estimatedCostUsd !== undefined && data.estimatedCostUsd !== lastCostUsd) {
     lastCostUsd = data.estimatedCostUsd;
     usageCost.classList.add('is-ticking');
-    await animateNumber(usageCost, data.estimatedCostUsd, {
+    animateNumber(usageCost, data.estimatedCostUsd, {
       formatter: (value) => formatUsd(value)
-    });
-    usageCost.classList.remove('is-ticking');
+    }).finally(() => usageCost.classList.remove('is-ticking'));
   }
 }
 
 function updateUsagePanel(data) {
   if (data.message || data.status) {
-    usageStatus.textContent = data.message || data.status;
+    const statusText = data.message || data.status;
+    usageStatus.textContent = statusText;
     usageStatus.classList.remove('status-pulse');
     void usageStatus.offsetWidth;
     usageStatus.classList.add('status-pulse');
+    if (data.log !== false) {
+      pushActivity(statusText);
+    }
   }
 
   if (data.durationFormatted) {
@@ -148,12 +234,18 @@ function updateUsagePanel(data) {
     usageDuration.textContent = formatDuration(data.totalSeconds);
   }
 
+  applyUsageValuesSync(data);
+
   if (data.progressPercent !== undefined) {
     setProgressPercent(data.progressPercent);
   }
 
   if (data.progressText) {
     progressText.textContent = data.progressText;
+  }
+
+  if (data.title && progressTitle) {
+    progressTitle.textContent = data.title;
   }
 
   animateUsageValues(data);
@@ -277,82 +369,124 @@ function handleProgressEvent(payload) {
   }
 }
 
-function parseSseChunk(buffer, onEvent) {
-  const parts = buffer.split('\n\n');
-  const remainder = parts.pop() || '';
+function createSseParser(onEvent) {
+  let buffer = '';
 
-  parts.forEach((part) => {
-    const lines = part.split('\n');
-    let eventName = 'message';
-    let dataLine = '';
+  return {
+    feed(chunkText) {
+      buffer += chunkText;
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || '';
 
-    lines.forEach((line) => {
-      if (line.startsWith('event:')) {
-        eventName = line.slice(6).trim();
-      } else if (line.startsWith('data:')) {
-        dataLine += line.slice(5).trim();
-      }
-    });
+      parts.forEach((part) => {
+        const lines = part.split('\n');
+        let eventName = 'message';
+        let dataLine = '';
 
-    if (!dataLine) return;
+        lines.forEach((line) => {
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim();
+          } else if (line.startsWith('data:')) {
+            dataLine += line.slice(5).trim();
+          }
+        });
 
-    try {
-      const data = JSON.parse(dataLine);
-      onEvent(eventName, data);
-    } catch {
-      // ignore malformed chunks
+        if (!dataLine) return;
+
+        try {
+          onEvent(eventName, JSON.parse(dataLine));
+        } catch {
+          // ignore malformed chunks
+        }
+      });
     }
-  });
-
-  return remainder;
+  };
 }
 
-async function transcribeWithStream(formData, apiKey) {
-  const response = await fetch('/api/transcribe?stream=1', {
-    method: 'POST',
-    headers: {
-      Accept: 'text/event-stream',
-      'X-OpenAI-API-Key': apiKey,
-      'X-Visitor-Id': getVisitorId()
-    },
-    body: formData
-  });
+function transcribeWithStream(formData, apiKey, { uploadLabel = 'audio' } = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finishResolve = (data) => {
+      if (settled) return;
+      settled = true;
+      resolve(data);
+    };
+    const finishReject = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
 
-  if (!response.ok && response.headers.get('content-type')?.includes('application/json')) {
-    const data = await response.json();
-    throw new Error(data.error || 'Transcription failed');
-  }
-
-  if (!response.body) {
-    throw new Error('Streaming is not supported in this browser');
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let resultPayload = null;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    buffer = parseSseChunk(buffer, (eventName, data) => {
+    const xhr = new XMLHttpRequest();
+    const parser = createSseParser((eventName, data) => {
       if (eventName === 'progress') {
         handleProgressEvent(data);
       } else if (eventName === 'result') {
-        resultPayload = data;
+        finishResolve(data);
       } else if (eventName === 'error') {
-        throw new Error(data.error || 'Transcription failed');
+        finishReject(new Error(data.error || 'Transcription failed'));
       }
     });
-  }
 
-  if (!resultPayload) {
-    throw new Error('No transcription result received');
-  }
+    let lastResponseLength = 0;
 
-  return resultPayload;
+    xhr.open('POST', '/api/transcribe?stream=1');
+    xhr.setRequestHeader('Accept', 'text/event-stream');
+    xhr.setRequestHeader('X-OpenAI-API-Key', apiKey);
+    xhr.setRequestHeader('X-Visitor-Id', getVisitorId());
+
+    xhr.upload.addEventListener('progress', (event) => {
+      if (!event.lengthComputable) return;
+      const uploadPercent = Math.round((event.loaded / event.total) * 14);
+      updateUsagePanel({
+        status: `Uploading ${uploadLabel}…`,
+        progressText: `Uploaded ${formatFileSize(event.loaded)} of ${formatFileSize(event.total)}`,
+        progressPercent: uploadPercent,
+        log: false
+      });
+    });
+
+    xhr.addEventListener('readystatechange', () => {
+      if (xhr.readyState >= 3) {
+        const chunk = xhr.responseText.slice(lastResponseLength);
+        lastResponseLength = xhr.responseText.length;
+        if (chunk) {
+          parser.feed(chunk);
+        }
+      }
+
+      if (xhr.readyState === 4) {
+        const tail = xhr.responseText.slice(lastResponseLength);
+        if (tail) {
+          parser.feed(tail);
+        }
+
+        if (xhr.status >= 200 && xhr.status < 300) {
+          if (!settled) {
+            finishReject(new Error('No transcription result received'));
+          }
+          return;
+        }
+
+        try {
+          const payload = JSON.parse(xhr.responseText);
+          finishReject(new Error(payload.error || 'Transcription failed'));
+        } catch {
+          finishReject(new Error(`Transcription failed (${xhr.status})`));
+        }
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      finishReject(new Error('Network error during transcription'));
+    });
+
+    xhr.addEventListener('timeout', () => {
+      finishReject(new Error('Request timed out'));
+    });
+
+    xhr.send(formData);
+  });
 }
 
 const BROWSER_PROCESSING_LIMIT = 250 * 1024 * 1024;
@@ -370,35 +504,68 @@ function validateFileSize(file) {
 }
 
 async function transcribeInClientParts(file, apiKey) {
-  updateUsagePanel({
-    status: 'Splitting in browser…',
-    progressText: 'Preparing audio parts for upload…',
-    progressPercent: 8
-  });
-
   const splitFn = window.splitAudioIntoUploadChunks;
   if (typeof splitFn !== 'function') {
     throw new Error('Audio splitter failed to load. Please hard-refresh the page (Cmd+Shift+R).');
   }
 
-  const chunks = await splitFn(file, getMaxUploadBytes() * 0.9);
+  const chunks = await splitFn(file, getMaxUploadBytes() * 0.9, (progress) => {
+    updateUsagePanel({
+      status: progress.message,
+      progressText: progress.message,
+      progressPercent: progress.percent,
+      durationFormatted: progress.durationSeconds
+        ? formatDuration(progress.durationSeconds)
+        : undefined,
+      log: true
+    });
+  });
+
   const textParts = [];
   const extractFn = window.extractTranscriptionBody;
   const mergeFn = window.buildMergedContent;
+  let processedSeconds = 0;
+  const totalDuration = fileDurationSeconds || chunks.reduce((sum, c) => sum + (c.durationSeconds || 0), 0);
+
+  pushActivity(`Transcribing ${chunks.length} parts…`);
 
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
+    const rangeStart = processedSeconds;
+    processedSeconds += chunk.durationSeconds || 0;
+
     updateUsagePanel({
-      status: `Part ${chunk.index} of ${chunk.total}`,
-      progressText: `Uploading and transcribing part ${chunk.index}…`,
-      progressPercent: 10 + Math.round((i / chunks.length) * 85)
+      status: `Transcribing part ${chunk.index}/${chunk.total}`,
+      progressText: `Uploading part ${chunk.index} of ${chunk.total}…`,
+      progressPercent: 35 + Math.round((i / chunks.length) * 60),
+      title: `Part ${chunk.index} of ${chunk.total}`
     });
 
     const formData = new FormData();
     formData.append('audio', chunk.blob, chunk.name);
-    const data = await transcribeWithStream(formData, apiKey);
+    const data = await transcribeWithStream(formData, apiKey, {
+      uploadLabel: `part ${chunk.index}/${chunk.total}`
+    });
     textParts.push(extractFn(data.content));
+
+    const donePercent = totalDuration > 0
+      ? Math.round((processedSeconds / totalDuration) * 100)
+      : Math.round(((i + 1) / chunks.length) * 100);
+
+    updateUsagePanel({
+      status: `Part ${chunk.index}/${chunk.total} done`,
+      progressText: `Merged ${i + 1} of ${chunks.length} parts`,
+      progressPercent: Math.min(99, 35 + Math.round(((i + 1) / chunks.length) * 60)),
+      totalSeconds: totalDuration,
+      billableMinutes: processedSeconds / 60
+    });
+
+    pushActivity(`Part ${chunk.index} finished (${formatDuration(rangeStart)}–${formatDuration(processedSeconds)})`, {
+      active: i === chunks.length - 1
+    });
   }
+
+  pushActivity('Merging all parts into one text…', { active: true });
 
   const content = mergeFn(file.name, textParts);
   return {
@@ -534,13 +701,17 @@ transcribeBtn.addEventListener('click', async () => {
   });
   uploadSection.classList.add('disabled');
 
+  seedInitialEstimate(selectedFile);
+
   const willSplitClient = needsClientSideSplit(selectedFile);
+  pushActivity(willSplitClient ? 'Large file — splitting locally first' : 'Sending audio to server');
   updateUsagePanel({
     status: willSplitClient ? 'Preparing parts…' : 'Uploading…',
     progressText: willSplitClient
-      ? 'Large file will be split, then each part transcribed and merged'
+      ? 'Splitting audio, then transcribing each part'
       : 'Uploading audio to server…',
-    progressPercent: 2
+    progressPercent: 2,
+    log: false
   });
 
   try {

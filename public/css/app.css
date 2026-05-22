@@ -437,6 +437,77 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+.activity-log {
+  margin: 0.85rem 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 140px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.activity-log:empty {
+  display: none;
+}
+
+.activity-item {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  padding: 0.4rem 0.55rem;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid transparent;
+  animation: activityIn 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.activity-item.is-active {
+  border-color: rgba(107, 138, 253, 0.35);
+  background: var(--accent-dim);
+}
+
+.activity-item.is-done {
+  opacity: 0.65;
+}
+
+.activity-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin-top: 0.35rem;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.activity-item.is-done .activity-dot {
+  background: var(--success);
+}
+
+.activity-time {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  min-width: 3.2rem;
+}
+
+.activity-text {
+  color: var(--text-muted);
+}
+
+.activity-item.is-active .activity-text {
+  color: var(--text);
+}
+
+@keyframes activityIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .usage-panel {
   margin-top: 1rem;
   padding: 0.85rem 1rem;

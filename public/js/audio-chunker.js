@@ -95,12 +95,23 @@ function secondsForMaxBytes(maxBytes, sampleRate = 16000) {
   return Math.max(30, Math.floor((maxBytes * 0.85) / bytesPerSecond));
 }
 
-async function splitAudioIntoUploadChunks(file, maxBytes) {
+async function splitAudioIntoUploadChunks(file, maxBytes, onProgress) {
+  onProgress?.({ phase: 'read', message: 'Reading audio file…', percent: 2 });
+
   const arrayBuffer = await file.arrayBuffer();
   const audioContext = new AudioContext();
 
   try {
+    onProgress?.({ phase: 'decode', message: 'Decoding audio…', percent: 8 });
     const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0));
+
+    onProgress?.({
+      phase: 'resample',
+      message: `Preparing audio (${formatDuration(decoded.duration)})…`,
+      percent: 14,
+      durationSeconds: decoded.duration
+    });
+
     const mono = downmixToMono(decoded);
     const resampled = await resampleBuffer(mono, 16000);
 
@@ -109,10 +120,22 @@ async function splitAudioIntoUploadChunks(file, maxBytes) {
       secondsForMaxBytes(maxBytes, 16000)
     );
     const samplesPerChunk = Math.floor(maxChunkSeconds * 16000);
+    const totalParts = Math.ceil(resampled.length / samplesPerChunk);
     const chunks = [];
 
     for (let offset = 0; offset < resampled.length; offset += samplesPerChunk) {
       const length = Math.min(samplesPerChunk, resampled.length - offset);
+      const partIndex = chunks.length + 1;
+
+      onProgress?.({
+        phase: 'chunk',
+        message: `Creating part ${partIndex} of ${totalParts}…`,
+        percent: 18 + Math.round((partIndex / totalParts) * 12),
+        part: partIndex,
+        totalParts,
+        durationSeconds: decoded.duration
+      });
+
       const chunkBuffer = new AudioBuffer({
         length,
         sampleRate: 16000,
@@ -120,19 +143,27 @@ async function splitAudioIntoUploadChunks(file, maxBytes) {
       });
       chunkBuffer.getChannelData(0).set(resampled.getChannelData(0).subarray(offset, offset + length));
 
-      const partIndex = chunks.length + 1;
       const blob = audioBufferToWavBlob(chunkBuffer);
       const baseName = file.name.replace(/\.[^/.]+$/, '');
       chunks.push({
         blob,
         name: `${baseName}_part_${partIndex}.wav`,
         index: partIndex,
-        total: 0
+        total: 0,
+        durationSeconds: length / 16000
       });
     }
 
     chunks.forEach((chunk) => {
       chunk.total = chunks.length;
+    });
+
+    onProgress?.({
+      phase: 'ready',
+      message: `Ready — ${chunks.length} parts`,
+      percent: 32,
+      totalParts: chunks.length,
+      durationSeconds: decoded.duration
     });
 
     return chunks;
@@ -163,6 +194,14 @@ function buildMergedContent(fileName, textParts) {
     mergedText,
     ''
   ].join('\n');
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  if (minutes > 0) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
 }
 
 window.secondsForMaxBytes = secondsForMaxBytes;
