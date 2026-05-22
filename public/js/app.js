@@ -146,7 +146,7 @@ function seedInitialEstimate(file) {
     return;
   }
 
-  const estimate = buildClientUsageEstimate(fileDurationSeconds, file.size);
+  const estimate = window.buildClientUsageEstimate(fileDurationSeconds, file.size);
   updateUsagePanel({
     status: 'Starting…',
     progressText: 'Initializing transcription…',
@@ -183,7 +183,7 @@ function applyUsageValuesSync(data) {
   }
 
   if (data.estimatedCostUsd !== undefined) {
-    usageCost.textContent = formatUsd(data.estimatedCostUsd);
+    usageCost.textContent = window.formatUsd(data.estimatedCostUsd);
     usageCost.dataset.value = String(data.estimatedCostUsd);
   }
 }
@@ -211,7 +211,7 @@ function animateUsageValues(data) {
     lastCostUsd = data.estimatedCostUsd;
     usageCost.classList.add('is-ticking');
     animateNumber(usageCost, data.estimatedCostUsd, {
-      formatter: (value) => formatUsd(value)
+      formatter: (value) => window.formatUsd(value)
     }).finally(() => usageCost.classList.remove('is-ticking'));
   }
 }
@@ -231,7 +231,7 @@ function updateUsagePanel(data) {
   if (data.durationFormatted) {
     usageDuration.textContent = data.durationFormatted;
   } else if (data.totalSeconds) {
-    usageDuration.textContent = formatDuration(data.totalSeconds);
+    usageDuration.textContent = window.formatDuration(data.totalSeconds);
   }
 
   applyUsageValuesSync(data);
@@ -259,7 +259,7 @@ function showFileEstimate(estimate) {
   const chunksLabel = estimate.chunkCount > 1 ? ` · ${estimate.chunkCount} parts` : '';
   const splitLabel = estimate.clientSideSplit ? ' · split before upload' : estimate.willSplit ? ' · split on server' : '';
   fileEstimateEl.textContent =
-    `~${estimate.durationFormatted} · ${estimate.billableMinutes} min billable · est. ${formatUsd(estimate.estimatedCostUsd)}${chunksLabel}${splitLabel}`;
+    `~${estimate.durationFormatted} · ${estimate.billableMinutes} min billable · est. ${window.formatUsd(estimate.estimatedCostUsd)}${chunksLabel}${splitLabel}`;
   fileEstimateEl.classList.remove('hidden');
   fileEstimateEl.classList.add('estimate-pop');
 }
@@ -286,8 +286,8 @@ async function loadWaveform(file) {
 
 async function loadFileEstimate(file) {
   try {
-    fileDurationSeconds = await getAudioDurationFromFile(file);
-    const estimate = buildClientUsageEstimate(fileDurationSeconds, file.size);
+    fileDurationSeconds = await window.getAudioDurationFromFile(file);
+    const estimate = window.buildClientUsageEstimate(fileDurationSeconds, file.size);
     showFileEstimate(estimate);
   } catch {
     fileDurationSeconds = null;
@@ -339,7 +339,7 @@ function handleProgressEvent(payload) {
     case 'chunk_done':
       updateUsagePanel({
         status: `Chunk ${payload.chunk} of ${payload.totalChunks} done`,
-        progressText: `Processed ${formatDuration(payload.processedSeconds)} of ${formatDuration(payload.totalSeconds)}`,
+        progressText: `Processed ${window.formatDuration(payload.processedSeconds)} of ${window.formatDuration(payload.totalSeconds)}`,
         chunk: payload.chunk,
         totalChunks: payload.totalChunks,
         billableMinutes: payload.billableMinutes,
@@ -492,7 +492,7 @@ function transcribeWithStream(formData, apiKey, { uploadLabel = 'audio' } = {}) 
 const BROWSER_PROCESSING_LIMIT = 250 * 1024 * 1024;
 
 function needsClientSideSplit(file) {
-  return file.size > getMaxUploadBytes();
+  return file.size > window.getMaxUploadBytes();
 }
 
 function validateFileSize(file) {
@@ -509,13 +509,13 @@ async function transcribeInClientParts(file, apiKey) {
     throw new Error('Audio splitter failed to load. Please hard-refresh the page (Cmd+Shift+R).');
   }
 
-  const chunks = await splitFn(file, getMaxUploadBytes() * 0.9, (progress) => {
+  const chunks = await splitFn(file, window.getMaxUploadBytes() * 0.9, (progress) => {
     updateUsagePanel({
       status: progress.message,
       progressText: progress.message,
       progressPercent: progress.percent,
       durationFormatted: progress.durationSeconds
-        ? formatDuration(progress.durationSeconds)
+        ? window.formatDuration(progress.durationSeconds)
         : undefined,
       log: true
     });
@@ -560,7 +560,7 @@ async function transcribeInClientParts(file, apiKey) {
       billableMinutes: processedSeconds / 60
     });
 
-    pushActivity(`Part ${chunk.index} finished (${formatDuration(rangeStart)}–${formatDuration(processedSeconds)})`, {
+    pushActivity(`Part ${chunk.index} finished (${window.formatDuration(rangeStart)}–${window.formatDuration(processedSeconds)})`, {
       active: i === chunks.length - 1
     });
   }
