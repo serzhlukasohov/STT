@@ -1,5 +1,9 @@
 (function () {
-  const { CHUNK_DURATION_SEC } = window.STT_SHARED;
+  const {
+    CHUNK_DURATION_SEC,
+    SAFE_CLIENT_CHUNK_SECONDS,
+    CLIENT_CHUNK_OVERLAP_SECONDS
+  } = window.STT_SHARED;
 
   function audioBufferToWavBlob(audioBuffer) {
     const numChannels = audioBuffer.numberOfChannels;
@@ -104,6 +108,57 @@
     return `${secs}s`;
   }
 
+  function buildChunkPlan(durationSeconds, maxChunkSeconds) {
+    const duration = Math.max(0, Number(durationSeconds) || 0);
+    const chunkSeconds = Math.min(
+      SAFE_CLIENT_CHUNK_SECONDS,
+      Math.max(1, Number(maxChunkSeconds) || SAFE_CLIENT_CHUNK_SECONDS),
+      CHUNK_DURATION_SEC
+    );
+    const overlapSeconds = Math.min(CLIENT_CHUNK_OVERLAP_SECONDS, chunkSeconds / 2);
+    const chunks = [];
+    let startSeconds = 0;
+
+    while (startSeconds < duration) {
+      const endSeconds = Math.min(duration, startSeconds + chunkSeconds);
+      chunks.push({ startSeconds, endSeconds });
+
+      if (endSeconds >= duration) {
+        break;
+      }
+
+      startSeconds = Math.max(0, endSeconds - overlapSeconds);
+    }
+
+    return chunks;
+  }
+
+  function assertChunkPlanCoversDuration(chunks, durationSeconds) {
+    const duration = Math.max(0, Number(durationSeconds) || 0);
+
+    if (duration === 0) {
+      return;
+    }
+
+    if (chunks.length === 0) {
+      throw new Error('No audio parts were created');
+    }
+
+    if (chunks[0].startSeconds > 0.001) {
+      throw new Error('Audio split does not start at the beginning');
+    }
+
+    for (let i = 1; i < chunks.length; i += 1) {
+      if (chunks[i].startSeconds > chunks[i - 1].endSeconds + 0.001) {
+        throw new Error(`Audio split has a gap before part ${i + 1}`);
+      }
+    }
+
+    if (chunks[chunks.length - 1].endSeconds < duration - 0.001) {
+      throw new Error('Audio split does not cover the end of the file');
+    }
+  }
+
   async function splitAudioIntoUploadChunks(file, maxBytes, onProgress) {
     onProgress?.({ phase: 'read', message: 'Reading audio file…', percent: 2 });
 
@@ -124,17 +179,18 @@
       const mono = downmixToMono(decoded);
       const resampled = await resampleBuffer(mono, 16000);
 
-      const maxChunkSeconds = Math.min(
-        CHUNK_DURATION_SEC,
-        secondsForMaxBytes(maxBytes, 16000)
-      );
-      const samplesPerChunk = Math.floor(maxChunkSeconds * 16000);
-      const totalParts = Math.ceil(resampled.length / samplesPerChunk);
+      const maxChunkSeconds = secondsForMaxBytes(maxBytes, 16000);
+      const chunkPlan = buildChunkPlan(decoded.duration, maxChunkSeconds);
+      assertChunkPlanCoversDuration(chunkPlan, decoded.duration);
+      const totalParts = chunkPlan.length;
       const chunks = [];
 
-      for (let offset = 0; offset < resampled.length; offset += samplesPerChunk) {
-        const length = Math.min(samplesPerChunk, resampled.length - offset);
-        const partIndex = chunks.length + 1;
+      for (let i = 0; i < chunkPlan.length; i += 1) {
+        const { startSeconds, endSeconds } = chunkPlan[i];
+        const offset = Math.floor(startSeconds * 16000);
+        const endOffset = Math.min(resampled.length, Math.ceil(endSeconds * 16000));
+        const length = endOffset - offset;
+        const partIndex = i + 1;
 
         onProgress?.({
           phase: 'chunk',
@@ -159,6 +215,8 @@
           name: `${baseName}_part_${partIndex}.wav`,
           index: partIndex,
           total: 0,
+          startSeconds,
+          endSeconds,
           durationSeconds: length / 16000
         });
       }
@@ -190,14 +248,30 @@
     return content.slice(index + marker.length).trim();
   }
 
-  function buildMergedContent(fileName, textParts) {
-    const mergedText = textParts.filter(Boolean).join('\n\n');
+  function assertValidTextPart(part) {
+    const text = typeof part === 'string' ? part : part.text || '';
+    if (!text.trim()) {
+      throw new Error(`Part ${part.index || '?'} returned empty transcription`);
+    }
+    if (/\[ERROR:\s*Failed to transcribe this part\]/i.test(text)) {
+      throw new Error(`Part ${part.index || '?'} failed to transcribe`);
+    }
+    return text.trim();
+  }
+
+  function buildMergedContent(fileName, textParts, chunks = []) {
+    const normalizedParts = textParts.map(assertValidTextPart);
+    const mergedText = normalizedParts.join('\n\n');
     const now = new Date().toISOString();
+    const coveredDuration = chunks.length > 0
+      ? Math.max(...chunks.map((chunk) => chunk.endSeconds || 0))
+      : 0;
 
     return [
       `File: ${fileName}`,
       `Uploaded at: ${now}`,
-      `Parts merged: ${textParts.length}`,
+      `Parts merged: ${normalizedParts.length}/${chunks.length || normalizedParts.length}`,
+      `Audio coverage: ${formatDurationShort(coveredDuration)}`,
       '',
       'Transcription:',
       mergedText,
@@ -208,5 +282,6 @@
   window.secondsForMaxBytes = secondsForMaxBytes;
   window.splitAudioIntoUploadChunks = splitAudioIntoUploadChunks;
   window.extractTranscriptionBody = extractTranscriptionBody;
+  window.assertValidTextPart = assertValidTextPart;
   window.buildMergedContent = buildMergedContent;
 })();

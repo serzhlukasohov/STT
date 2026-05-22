@@ -523,6 +523,7 @@ async function transcribeInClientParts(file, apiKey) {
 
   const textParts = [];
   const extractFn = window.extractTranscriptionBody;
+  const assertValidTextPart = window.assertValidTextPart;
   const mergeFn = window.buildMergedContent;
   let processedSeconds = 0;
   const totalDuration = fileDurationSeconds || chunks.reduce((sum, c) => sum + (c.durationSeconds || 0), 0);
@@ -546,7 +547,15 @@ async function transcribeInClientParts(file, apiKey) {
     const data = await transcribeWithStream(formData, apiKey, {
       uploadLabel: `part ${chunk.index}/${chunk.total}`
     });
-    textParts.push(extractFn(data.content));
+    const partText = extractFn(data.content);
+    assertValidTextPart({
+      index: chunk.index,
+      text: partText
+    });
+    textParts.push({
+      index: chunk.index,
+      text: partText
+    });
 
     const donePercent = totalDuration > 0
       ? Math.round((processedSeconds / totalDuration) * 100)
@@ -567,7 +576,7 @@ async function transcribeInClientParts(file, apiKey) {
 
   pushActivity('Merging all parts into one text…', { active: true });
 
-  const content = mergeFn(file.name, textParts);
+  const content = mergeFn(file.name, textParts, chunks);
   return {
     content,
     fileName: `${file.name.replace(/\.[^/.]+$/, '')}_transcription.txt`,

@@ -1,6 +1,8 @@
 (function () {
   const {
     CHUNK_DURATION_SEC,
+    SAFE_CLIENT_CHUNK_SECONDS,
+    CLIENT_CHUNK_OVERLAP_SECONDS,
     MAX_FILE_SIZE_BYTES,
     DEFAULT_PRICE_PER_MINUTE,
     CHARS_PER_TOKEN
@@ -85,11 +87,16 @@
     const exceedsDuration = duration > CHUNK_DURATION_SEC;
     const needsSplit = exceedsUpload || exceedsWhisper || exceedsDuration;
     const chunkByDuration = duration > 0 ? Math.ceil(duration / CHUNK_DURATION_SEC) : 1;
-    const secondsPerChunk = typeof window.secondsForMaxBytes === 'function'
+    const uploadSecondsPerChunk = typeof window.secondsForMaxBytes === 'function'
       ? window.secondsForMaxBytes(maxUploadBytes, 16000)
       : Math.max(30, Math.floor((maxUploadBytes * 0.85) / (16000 * 2)));
+    const safeClientChunkSeconds = Math.min(SAFE_CLIENT_CHUNK_SECONDS, uploadSecondsPerChunk);
+    const clientStepSeconds = Math.max(
+      1,
+      safeClientChunkSeconds - Math.min(CLIENT_CHUNK_OVERLAP_SECONDS, safeClientChunkSeconds / 2)
+    );
     const chunkByUpload = exceedsUpload && duration > 0
-      ? Math.ceil(duration / secondsPerChunk)
+      ? Math.ceil(duration / clientStepSeconds)
       : 1;
     const chunkCount = needsSplit ? Math.max(chunkByDuration, chunkByUpload) : 1;
     const whisper = estimateWhisperCost(duration);
